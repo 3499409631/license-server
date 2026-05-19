@@ -19,9 +19,13 @@ export ADMIN_USER='admin'
 export ADMIN_PASSWORD='admin123'
 export SERVER_ADDR='0.0.0.0:3000'
 export APP_API_KEY='change-me-api-key'
+export CLIENT_AES_KEY='client-aes-key-32-bytes-demo!!!!'
+export SERVER_AES_KEY='server-aes-key-32-bytes-demo!!!!'
 ```
 
 第一次启动时，如果数据库里没有管理员，会自动使用 `ADMIN_USER` 和 `ADMIN_PASSWORD` 创建初始管理员。
+
+`CLIENT_AES_KEY` 和 `SERVER_AES_KEY` 必须都是 32 字节字符串。`CLIENT_AES_KEY` 用来加密客户端请求，`SERVER_AES_KEY` 用来加密服务端响应。
 
 ## 运行
 
@@ -49,20 +53,34 @@ http://127.0.0.1:3000/login
 
 ## 客户端验证 API
 
-```bash
-curl -X POST 'http://152.136.226.83:3000/api/verify' \
-  -H 'Content-Type: application/json' \
-  -H 'X-Api-Key: change-me-api-key' \
-  -d '{"license_key":"LIC-03a5f94d3e3a4f239b76f36d829d4115","machine_code":"机器码-001"}'
+验证接口只接受 AES-256-GCM 加密后的 JSON：
+
+```json
+{
+  "data": "base64(nonce+ciphertext)"
+}
 ```
 
-返回示例：
+运行 Rust 客户端示例：
+
+```bash
+export VERIFY_API_URL='http://127.0.0.1:3000/api/verify'
+export APP_API_KEY='change-me-api-key'
+export CLIENT_AES_KEY='client-aes-key-32-bytes-demo!!!!'
+export SERVER_AES_KEY='server-aes-key-32-bytes-demo!!!!'
+export LICENSE_KEY='LIC-03a5f94d3e3a4f239b76f36d829d4115'
+export MACHINE_CODE='机器码-001'
+
+cargo run --features client-example --example encrypted_client
+```
+
+解密后的返回示例：
 
 ```json
 {
   "status": "valid",
   "message": "卡密有效",
-  "expires_at": "2026-06-19T00:00:00+00:00",
+  "expires_at": "2026-06-19T08:00:00+08:00",
   "license_type": "月卡"
 }
 ```

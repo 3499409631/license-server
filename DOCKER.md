@@ -150,6 +150,8 @@ export ADMIN_USER='admin'
 export ADMIN_PASSWORD='Manong1314520.'
 export SERVER_ADDR='0.0.0.0:3000'
 export APP_API_KEY='change-me-api-key'
+export CLIENT_AES_KEY='client-aes-key-32-bytes-demo!!!!'
+export SERVER_AES_KEY='server-aes-key-32-bytes-demo!!!!'
 
 ./target/release/license-server
 ```
@@ -164,11 +166,17 @@ http://127.0.0.1:3000/login
 
 ## 验证 API
 
+验证接口只接受 AES-256-GCM 加密后的 JSON。可以使用项目里的 Rust 示例客户端测试：
+
 ```bash
-curl -X POST 'http://1.15.171.108:3000/api/verify' \
-  -H 'Content-Type: application/json' \
-  -H 'X-Api-Key: change-me-api-key' \
-  -d '{"license_key":"LIC-f55f3d691ef24774b60d6c12eb4576ac","machine_code":"machine-001"}'
+export VERIFY_API_URL='http://1.15.171.108:3000/api/verify'
+export APP_API_KEY='change-me-api-key'
+export CLIENT_AES_KEY='client-aes-key-32-bytes-demo!!!!'
+export SERVER_AES_KEY='server-aes-key-32-bytes-demo!!!!'
+export LICENSE_KEY='LIC-f55f3d691ef24774b60d6c12eb4576ac'
+export MACHINE_CODE='machine-001'
+
+cargo run --features client-example --example encrypted_client
 ```
 
 ## 生产部署
@@ -187,6 +195,8 @@ scp target/release/license-server user@server:/opt/license-server/
 ADMIN_PASSWORD
 APP_API_KEY
 DATABASE_URL
+CLIENT_AES_KEY
+SERVER_AES_KEY
 ```
 
 ## 常见问题

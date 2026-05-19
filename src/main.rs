@@ -2,6 +2,7 @@ mod admin;
 mod api;
 mod auth;
 mod config;
+mod crypto;
 mod db;
 mod html;
 mod models;
@@ -36,7 +37,7 @@ pub struct AppState {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 从环境变量读取配置，方便部署到 Linux 服务器时通过 systemd/docker 注入配置。
-    let config = Arc::new(Config::from_env());
+    let config = Arc::new(Config::from_env()?);
 
     // 建立 PostgreSQL 连接池。连接池会复用数据库连接，避免每个请求都重新连接数据库。
     let pool = PgPool::connect(&config.database_url).await?;

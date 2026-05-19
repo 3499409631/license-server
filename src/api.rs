@@ -11,7 +11,8 @@ use std::net::SocketAddr;
 
 use crate::{
     AppState,
-    models::{VerifyRequest, VerifyResponse},
+    crypto::{CryptoError, decrypt_json, encrypt_json},
+    models::{EncryptedPayload, VerifyRequest, VerifyResponse},
 };
 
 #[derive(FromRow)]
@@ -28,7 +29,7 @@ pub async fn verify_license(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(payload): Json<VerifyRequest>,
+    Json(encrypted_payload): Json<EncryptedPayload>,
 ) -> impl IntoResponse {
     let api_key = headers
         .get("x-api-key")
@@ -46,15 +47,29 @@ pub async fn verify_license(
             .into_response();
     }
 
+    let payload =
+        match decrypt_json::<VerifyRequest>(&encrypted_payload, &state.config.client_aes_key) {
+            Ok(payload) => payload,
+            Err(_) => return bad_request_response("加密数据格式错误或解密失败"),
+        };
+
+    let response = verify_license_payload(&state, addr, headers, payload).await;
+    encrypted_response(response, &state.config.server_aes_key)
+}
+
+async fn verify_license_payload(
+    state: &AppState,
+    addr: SocketAddr,
+    headers: HeaderMap,
+    payload: VerifyRequest,
+) -> VerifyResponse {
     if payload.license_key.trim().is_empty() || payload.machine_code.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "status": "bad_request",
-                "message": "卡密和机器码不能为空"
-            })),
-        )
-            .into_response();
+        return VerifyResponse {
+            status: "bad_request".to_string(),
+            message: "卡密和机器码不能为空".to_string(),
+            expires_at: None,
+            license_type: None,
+        };
     }
 
     let ip_address = headers
@@ -83,14 +98,12 @@ pub async fn verify_license(
     .await;
 
     let Ok(license) = license else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "status": "error",
-                "message": "查询卡密失败"
-            })),
-        )
-            .into_response();
+        return VerifyResponse {
+            status: "error".to_string(),
+            message: "查询卡密失败".to_string(),
+            expires_at: None,
+            license_type: None,
+        };
     };
 
     let Some(license) = license else {
@@ -104,13 +117,12 @@ pub async fn verify_license(
         )
         .await;
 
-        return Json(VerifyResponse {
+        return VerifyResponse {
             status: "invalid".to_string(),
             message: "卡密不存在".to_string(),
             expires_at: None,
             license_type: None,
-        })
-        .into_response();
+        };
     };
 
     if license.status == "banned" {
@@ -124,13 +136,12 @@ pub async fn verify_license(
         )
         .await;
 
-        return Json(VerifyResponse {
+        return VerifyResponse {
             status: "banned".to_string(),
             message: "卡密已被封禁".to_string(),
             expires_at: license.expires_at.map(format_beijing_time),
             license_type: Some(license.type_name),
-        })
-        .into_response();
+        };
     }
 
     let mut expires_at = license.expires_at;
@@ -147,13 +158,12 @@ pub async fn verify_license(
             )
             .await;
 
-            return Json(VerifyResponse {
+            return VerifyResponse {
                 status: "expired".to_string(),
                 message: "卡密已到期".to_string(),
                 expires_at: Some(format_beijing_time(expire_time)),
                 license_type: Some(license.type_name),
-            })
-            .into_response();
+            };
         }
     }
 
@@ -180,13 +190,12 @@ pub async fn verify_license(
                     )
                     .await;
 
-                    return Json(VerifyResponse {
+                    return VerifyResponse {
                         status: "valid".to_string(),
                         message: "卡密有效，已自动换绑机器码".to_string(),
                         expires_at: expires_at.map(format_beijing_time),
                         license_type: Some(license.type_name),
-                    })
-                    .into_response();
+                    };
                 }
                 Ok(false) => {
                     log_verify(
@@ -199,15 +208,21 @@ pub async fn verify_license(
                     )
                     .await;
 
-                    return Json(VerifyResponse {
+                    return VerifyResponse {
                         status: "machine_mismatch".to_string(),
                         message: "机器码不匹配，自动换绑次数已达到限制".to_string(),
                         expires_at: expires_at.map(format_beijing_time),
                         license_type: Some(license.type_name),
-                    })
-                    .into_response();
+                    };
                 }
-                Err(_) => return error_response("自动换绑失败"),
+                Err(_) => {
+                    return VerifyResponse {
+                        status: "error".to_string(),
+                        message: "自动换绑失败".to_string(),
+                        expires_at: None,
+                        license_type: None,
+                    };
+                }
             }
         }
     }
@@ -241,7 +256,12 @@ pub async fn verify_license(
         .await;
 
         let Ok(updated) = updated else {
-            return error_response("激活卡密失败");
+            return VerifyResponse {
+                status: "error".to_string(),
+                message: "激活卡密失败".to_string(),
+                expires_at: None,
+                license_type: None,
+            };
         };
 
         if updated.rows_affected() == 0 {
@@ -252,7 +272,14 @@ pub async fn verify_license(
                     .await
                 {
                     Ok(value) => value.flatten(),
-                    Err(_) => return error_response("读取机器码失败"),
+                    Err(_) => {
+                        return VerifyResponse {
+                            status: "error".to_string(),
+                            message: "读取机器码失败".to_string(),
+                            expires_at: None,
+                            license_type: None,
+                        };
+                    }
                 };
 
             if current_machine_code.as_deref() != Some(payload.machine_code.as_str()) {
@@ -266,13 +293,12 @@ pub async fn verify_license(
                 )
                 .await;
 
-                return Json(VerifyResponse {
+                return VerifyResponse {
                     status: "machine_mismatch".to_string(),
                     message: "机器码不匹配".to_string(),
                     expires_at: None,
                     license_type: Some(license.type_name),
-                })
-                .into_response();
+                };
             }
         }
 
@@ -289,18 +315,25 @@ pub async fn verify_license(
     )
     .await;
 
-    Json(VerifyResponse {
+    VerifyResponse {
         status: "valid".to_string(),
         message: "卡密有效".to_string(),
         expires_at: expires_at.map(format_beijing_time),
         license_type: Some(license.type_name),
-    })
-    .into_response()
+    }
 }
 
 fn format_beijing_time(time: chrono::DateTime<chrono::Utc>) -> String {
     time.with_timezone(&FixedOffset::east_opt(8 * 3600).expect("valid Beijing timezone offset"))
         .to_rfc3339()
+}
+
+fn encrypted_response(response: VerifyResponse, key: &str) -> axum::response::Response {
+    match encrypt_json(&response, key) {
+        Ok(payload) => Json(payload).into_response(),
+        Err(CryptoError::InvalidKeyLength { .. }) => internal_error_response("服务器加密配置错误"),
+        Err(_) => internal_error_response("加密响应失败"),
+    }
 }
 
 async fn log_verify(
@@ -417,7 +450,18 @@ async fn auto_rebind_limit(tx: &mut Transaction<'_, Postgres>) -> Result<i32, sq
         .unwrap_or(1))
 }
 
-fn error_response(message: &str) -> axum::response::Response {
+fn bad_request_response(message: &str) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "status": "bad_request",
+            "message": message
+        })),
+    )
+        .into_response()
+}
+
+fn internal_error_response(message: &str) -> axum::response::Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({

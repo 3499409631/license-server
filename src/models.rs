@@ -51,6 +51,11 @@ pub struct VerifyRequest {
     pub machine_code: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EncryptedPayload {
+    pub data: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct VerifyResponse {
     pub status: String,

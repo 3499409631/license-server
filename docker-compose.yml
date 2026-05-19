@@ -26,6 +26,8 @@ services:
       ADMIN_PASSWORD: admin123
       SERVER_ADDR: 0.0.0.0:3000
       APP_API_KEY: change-me-api-key
+      CLIENT_AES_KEY: client-aes-key-32-bytes-demo!!!!
+      SERVER_AES_KEY: server-aes-key-32-bytes-demo!!!!
 
 volumes:
   license-postgres-data:
