@@ -1,115 +1,127 @@
-# 编译 Linux 版本并用 Docker 运行
+# 用 Docker 编译 x86_64 Linux 版本
 
-这个项目是 Rust + Axum + PostgreSQL 服务。推荐直接用 Docker 多阶段构建：不需要在 macOS 上手动配置 Linux 交叉编译工具链，Docker 会在 Linux 环境里编译出 Linux 可执行文件。
+这个项目是 Rust + Axum + PostgreSQL 服务。当前 Docker 编译流程只保留一种方式：先构建一个专门用于 `x86_64` Linux 的编译容器，然后你自己启动容器、连接进去，并手动运行 `cargo build` 命令。
 
-## 方式一：直接构建 Docker 镜像
+这样做的好处是编译环境固定在 Linux `x86_64`，同时源码、`target`、Cargo registry 和 Cargo git 缓存都会保留在本地或 Docker volume 里，后续重复编译会快很多。
 
-在项目根目录新建 `Dockerfile`：
+## 构建 x86_64 编译镜像
 
-```dockerfile
-FROM docker.m.daocloud.io/library/rust:1.95-bookworm AS builder
-
-WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-
-RUN cargo build --release
-
-FROM docker.m.daocloud.io/library/debian:bookworm-slim
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY --from=builder /app/target/release/license-server /usr/local/bin/license-server
-
-ENV SERVER_ADDR=0.0.0.0:3000
-EXPOSE 3000
-
-CMD ["license-server"]
-```
-
-建议同时新建 `.dockerignore`，避免把本地编译产物复制进镜像构建上下文：
-
-```dockerignore
-target
-.git
-.DS_Store
-```
-
-构建镜像：
-
-```bash
-docker build -t license-server:latest .
-```
-
-如果你能稳定访问 Docker Hub，也可以把 `Dockerfile` 里的镜像改回官方地址：
-
-```dockerfile
-FROM rust:1.95-bookworm AS builder
-FROM debian:bookworm-slim
-```
-
-如果你在 Apple Silicon Mac 上构建，但最终要部署到普通 Linux x86_64 服务器，可以指定平台：
-
-```bash
-docker build --platform linux/amd64 -t license-server:latest .
-```
-
-如果目标服务器也是 ARM64 Linux，则用：
-
-```bash
-docker build --platform linux/arm64 -t license-server:latest .
-```
-
-## 可复用的编译容器
-
-如果你想要一个专门用来编译 Linux 版本的 Docker 容器，使用项目里的 `Dockerfile.builder` 和 `docker-compose.build.yml`。
-
-先构建 builder 镜像：
+在项目根目录执行：
 
 ```bash
 docker compose -f docker-compose.build.yml build
 ```
 
-以后每次编译都运行：
+这个命令会构建镜像：
 
-```bash
-docker compose -f docker-compose.build.yml run --rm builder
+```text
+license-server-builder:x86_64-rust-1.95
 ```
 
-编译成功后的 Linux 可执行文件在：
+`docker-compose.build.yml` 已经固定：
+
+```yaml
+platform: linux/amd64
+```
+
+所以即使你在 Apple Silicon Mac 上执行，builder 容器也会按 Linux `x86_64` 环境运行。
+
+## 启动编译容器
+
+```bash
+docker compose -f docker-compose.build.yml up -d builder
+```
+
+容器名是：
+
+```text
+license-server-builder
+```
+
+这个容器不会自动编译，它会常驻运行，等待你连接进去手动执行命令。
+
+## 连接到编译容器
+
+```bash
+docker exec -it license-server-builder bash
+```
+
+进入容器后，当前目录是：
+
+```text
+/workspace
+```
+
+这个目录挂载的是项目根目录。
+
+## 手动编译
+
+在容器里执行：
+
+```bash
+cargo build --release
+```
+
+编译成功后的 x86_64 Linux 可执行文件在宿主机项目目录：
 
 ```text
 target/release/license-server
 ```
 
-这个 builder 会复用 Cargo registry、Cargo git 和 `target` 缓存，第二次以后会快很多。
-
-也可以直接在 builder 容器里执行其他 Cargo 命令：
+你也可以在容器里手动运行其他 Cargo 命令：
 
 ```bash
-docker compose -f docker-compose.build.yml run --rm builder cargo test
-docker compose -f docker-compose.build.yml run --rm builder cargo check
-docker compose -f docker-compose.build.yml run --rm builder cargo clean
+cargo check
+cargo test
+cargo clean
 ```
 
-如果你在 Apple Silicon Mac 上，但要编译给普通 Linux x86_64 服务器用，运行时指定平台：
+退出容器 shell：
 
 ```bash
-docker compose -f docker-compose.build.yml run --rm --platform linux/amd64 builder
+exit
 ```
 
-这个命令编出来的是 Linux x86_64 版本：
+## 停止编译容器
 
-```text
-target/release/license-server
+```bash
+docker compose -f docker-compose.build.yml stop builder
 ```
 
-## 启动 PostgreSQL
+再次需要编译时重新启动：
 
-先创建一个 Docker 网络，让服务容器可以通过容器名访问数据库：
+```bash
+docker compose -f docker-compose.build.yml up -d builder
+docker exec -it license-server-builder bash
+```
+
+如果要删除这个常驻容器：
+
+```bash
+docker compose -f docker-compose.build.yml down
+```
+
+Cargo 缓存 volume 默认会保留。删除容器不会删除这些缓存。
+
+## 清理编译缓存
+
+只清理 Rust 编译产物：
+
+```bash
+rm -rf target
+```
+
+同时删除 Cargo registry 和 git 缓存：
+
+```bash
+docker compose -f docker-compose.build.yml down -v
+```
+
+下次编译会重新下载依赖。
+
+## 运行 PostgreSQL
+
+如果你只是在本机用 Docker 跑数据库，可以先创建网络：
 
 ```bash
 docker network create license-net
@@ -121,25 +133,25 @@ docker network create license-net
 docker run -d \
   --name license-postgres \
   --network license-net \
-  -e POSTGRES_PASSWORD=postgres \
+  -p 5432:5432 \
+  -e POSTGRES_PASSWORD=manong666. \
   -e POSTGRES_DB=license_server \
   -v license-postgres-data:/var/lib/postgresql/data \
   docker.m.daocloud.io/library/postgres:16
 ```
 
-## 启动 license-server
+## 运行编译出来的程序
+
+编译出来的是 Linux `x86_64` 可执行文件。把它放到 Linux `x86_64` 机器上后，准备数据库连接和环境变量：
 
 ```bash
-docker run -d \
-  --name license-server \
-  --network license-net \
-  -p 3000:3000 \
-  -e DATABASE_URL='postgres://postgres:postgres@license-postgres:5432/license_server' \
-  -e ADMIN_USER='admin' \
-  -e ADMIN_PASSWORD='admin123' \
-  -e SERVER_ADDR='0.0.0.0:3000' \
-  -e APP_API_KEY='change-me-api-key' \
-  license-server:latest
+export DATABASE_URL='postgres://postgres:manong666.@127.0.0.1:5432/license_server'
+export ADMIN_USER='admin'
+export ADMIN_PASSWORD='Manong1314520.'
+export SERVER_ADDR='0.0.0.0:3000'
+export APP_API_KEY='change-me-api-key'
+
+./target/release/license-server
 ```
 
 启动后访问：
@@ -150,103 +162,41 @@ http://127.0.0.1:3000/login
 
 第一次启动时，如果数据库里没有管理员，程序会自动使用 `ADMIN_USER` 和 `ADMIN_PASSWORD` 创建初始管理员。
 
-查看日志：
-
-```bash
-docker logs -f license-server
-```
-
-停止并删除服务容器：
-
-```bash
-docker rm -f license-server
-```
-
-停止并删除数据库容器：
-
-```bash
-docker rm -f license-postgres
-```
-
-如果要连数据库数据一起删除：
-
-```bash
-docker volume rm license-postgres-data
-```
-
-## 方式二：先编译 Linux 可执行文件，再放进 Docker
-
-如果你只是想得到一个 Linux 二进制文件，可以用 `cross`：
-
-```bash
-cargo install cross
-cross build --release --target x86_64-unknown-linux-gnu
-```
-
-生成文件位置：
-
-```text
-target/x86_64-unknown-linux-gnu/release/license-server
-```
-
-然后可以写一个只打包二进制的 `Dockerfile`：
-
-```dockerfile
-FROM debian:bookworm-slim
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY target/x86_64-unknown-linux-gnu/release/license-server /usr/local/bin/license-server
-
-ENV SERVER_ADDR=0.0.0.0:3000
-EXPOSE 3000
-
-CMD ["license-server"]
-```
-
-构建并运行：
-
-```bash
-docker build -t license-server:latest .
-docker run -d \
-  --name license-server \
-  --network license-net \
-  -p 3000:3000 \
-  -e DATABASE_URL='postgres://postgres:postgres@license-postgres:5432/license_server' \
-  -e ADMIN_USER='admin' \
-  -e ADMIN_PASSWORD='admin123' \
-  -e SERVER_ADDR='0.0.0.0:3000' \
-  -e APP_API_KEY='change-me-api-key' \
-  license-server:latest
-```
-
 ## 验证 API
 
 ```bash
-curl -X POST 'http://127.0.0.1:3000/api/verify' \
+curl -X POST 'http://1.15.171.108:3000/api/verify' \
   -H 'Content-Type: application/json' \
   -H 'X-Api-Key: change-me-api-key' \
-  -d '{"license_key":"LIC-xxxx","machine_code":"machine-001"}'
+  -d '{"license_key":"LIC-f55f3d691ef24774b60d6c12eb4576ac","machine_code":"machine-001"}'
+```
+
+## 生产部署
+
+把编译出来的文件复制到目标 Linux `x86_64` 服务器：
+
+```bash
+scp target/release/license-server user@server:/opt/license-server/
+```
+
+在服务器上设置环境变量后运行即可。目标服务器必须是 Linux `x86_64`，并且能够连接 PostgreSQL。
+
+生产环境不要继续使用文档里的默认密码和默认 API Key，至少要修改：
+
+```text
+ADMIN_PASSWORD
+APP_API_KEY
+DATABASE_URL
 ```
 
 ## 常见问题
 
 ### 拉取基础镜像超时
 
-如果看到类似下面的错误：
-
-```text
-failed to fetch anonymous token
-i/o timeout
-```
-
-说明 Docker 当前网络拉取 Docker Hub 镜像超时。当前项目里的 `Dockerfile` 和 `docker-compose.yml` 已经使用 Docker Hub 代理地址：
+项目里的 Docker 文件使用了 Docker Hub 代理地址：
 
 ```text
 docker.m.daocloud.io/library/rust:1.95-bookworm
-docker.m.daocloud.io/library/debian:bookworm-slim
 docker.m.daocloud.io/library/postgres:16
 ```
 
@@ -254,49 +204,25 @@ docker.m.daocloud.io/library/postgres:16
 
 ```text
 rust:1.95-bookworm
-debian:bookworm-slim
 postgres:16
+```
+
+### 容器里执行 cargo 很慢
+
+第一次编译会下载依赖并完整构建，耗时较长。后续会复用这些缓存：
+
+```text
+cargo-registry
+cargo-git
+target
 ```
 
 ### 容器启动后连不上数据库
 
-如果服务容器和数据库容器在同一个 Docker 网络里，`DATABASE_URL` 里的主机名要写数据库容器名：
+如果服务和数据库都在 Docker 容器里，并且位于同一个 Docker 网络，`DATABASE_URL` 里的主机名要写数据库容器名：
 
 ```text
 postgres://postgres:postgres@license-postgres:5432/license_server
 ```
 
-不要写 `localhost`。在容器里，`localhost` 指的是服务容器自己，不是 PostgreSQL 容器。
-
-### 端口被占用
-
-如果本机 `3000` 端口已经被占用，可以改左边的宿主机端口：
-
-```bash
-docker run -d \
-  --name license-server \
-  --network license-net \
-  -p 8080:3000 \
-  -e DATABASE_URL='postgres://postgres:postgres@license-postgres:5432/license_server' \
-  -e ADMIN_USER='admin' \
-  -e ADMIN_PASSWORD='admin123' \
-  -e SERVER_ADDR='0.0.0.0:3000' \
-  -e APP_API_KEY='change-me-api-key' \
-  license-server:latest
-```
-
-然后访问：
-
-```text
-http://127.0.0.1:8080/login
-```
-
-### 生产环境注意
-
-生产环境不要继续使用文档里的默认密码和默认 API Key，至少要修改：
-
-```bash
-ADMIN_PASSWORD
-APP_API_KEY
-DATABASE_URL
-```
+不要写 `localhost`。在容器里，`localhost` 指的是当前容器自己。

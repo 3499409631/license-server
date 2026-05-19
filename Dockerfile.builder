@@ -11,4 +11,4 @@ RUN apt-get update \
 
 ENV CARGO_HOME=/usr/local/cargo
 
-CMD ["cargo", "build", "--release"]
+CMD ["bash"]

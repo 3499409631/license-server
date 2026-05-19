@@ -18,7 +18,8 @@ use sqlx::PgPool;
 use crate::{
     admin::{
         admin_dashboard, ban_license, create_license, create_license_type, create_user,
-        licenses_page, login_form, login_submit, logout, types_page, users_page,
+        delete_user, licenses_page, login_form, login_submit, logout, online_page, settings_page,
+        types_page, unbind_license, update_settings, update_user_password, users_page,
     },
     api::verify_license,
     auth::bootstrap_admin,
@@ -60,10 +61,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/login", get(login_form).post(login_submit))
         .route("/logout", post(logout))
         .route("/admin", get(admin_dashboard))
+        .route("/admin/online", get(online_page))
+        .route("/admin/settings", get(settings_page).post(update_settings))
         .route("/admin/users", get(users_page).post(create_user))
+        .route("/admin/users/{id}/password", post(update_user_password))
+        .route("/admin/users/{id}/delete", post(delete_user))
         .route("/admin/types", get(types_page).post(create_license_type))
         .route("/admin/licenses", get(licenses_page).post(create_license))
         .route("/admin/licenses/{id}/ban", post(ban_license))
+        .route("/admin/licenses/{id}/unbind", post(unbind_license))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&config.server_addr).await?;

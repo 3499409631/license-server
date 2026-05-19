@@ -63,6 +63,33 @@ pub async fn init_database(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .await?;
 
+    // machine_rebind_logs 保存自动换绑记录，用来限制每张卡密 24 小时内的自动换绑次数。
+    pool.execute(
+        r#"
+        CREATE TABLE IF NOT EXISTS machine_rebind_logs (
+            id BIGSERIAL PRIMARY KEY,
+            license_id BIGINT NOT NULL REFERENCES licenses(id) ON DELETE CASCADE,
+            old_machine_code TEXT NOT NULL,
+            new_machine_code TEXT NOT NULL,
+            ip_address TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .await?;
+
+    // app_settings 保存后台可配置的全局参数。
+    pool.execute(
+        r#"
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .await?;
+
     // sessions 保存后台登录态。浏览器只保存随机 session_id，真实用户信息放在数据库里。
     pool.execute(
         r#"
@@ -82,6 +109,16 @@ pub async fn init_database(pool: &PgPool) -> Result<(), sqlx::Error> {
         INSERT INTO license_types (name, duration_days)
         VALUES ('月卡', 30)
         ON CONFLICT (name) DO NOTHING
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO app_settings (key, value)
+        VALUES ('auto_rebind_limit_per_24h', '1')
+        ON CONFLICT (key) DO NOTHING
         "#,
     )
     .execute(pool)

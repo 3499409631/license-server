@@ -12,6 +12,8 @@ pub fn page(title: &str, user: Option<&SessionUser>, body: String) -> Html<Strin
                 <a href="/admin/users">代理</a>
                 <a href="/admin/types">类型</a>
                 <a href="/admin/licenses">卡密</a>
+                <a href="/admin/online">在线</a>
+                <a href="/admin/settings">设置</a>
                 <span>{} ({})</span>
                 <form method="post" action="/logout"><button type="submit">退出</button></form>
             </nav>
@@ -50,6 +52,9 @@ pub fn page(title: &str, user: Option<&SessionUser>, body: String) -> Html<Strin
                 .stat {{ border: 1px solid #d9dee7; border-radius: 8px; padding: 14px; }}
                 .stat strong {{ display: block; font-size: 26px; }}
                 .error {{ color: #b42318; }}
+                .actions {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
+                .actions form {{ display: flex; gap: 8px; align-items: center; margin: 0; }}
+                .actions input {{ width: 160px; }}
             </style>
         </head>
         <body>

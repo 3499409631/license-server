@@ -4,6 +4,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header::SET_COOKIE},
     response::{Html, IntoResponse, Redirect, Response},
 };
+use chrono::FixedOffset;
 use uuid::Uuid;
 
 use crate::{
@@ -16,7 +17,8 @@ use crate::{
     html::{escape, page},
     models::{
         BanLicenseForm, CreateLicenseForm, CreateLicenseTypeForm, CreateUserForm, License,
-        LicenseType, LoginForm, SessionUser, User,
+        LicenseType, LoginForm, OnlineLicense, SessionUser, SettingsForm, UpdateUserPasswordForm,
+        User,
     },
 };
 
@@ -96,6 +98,7 @@ pub async fn admin_dashboard(
         count_licenses_by_owners(&state, &visible_owner_ids, Some("active")).await?;
     let banned_licenses =
         count_licenses_by_owners(&state, &visible_owner_ids, Some("banned")).await?;
+    let today_login_users = count_today_login_users(&state, &visible_owner_ids).await?;
 
     Ok(page(
         "后台首页",
@@ -109,6 +112,7 @@ pub async fn admin_dashboard(
                     <div class="stat"><span>卡密总数</span><strong>{total_licenses}</strong></div>
                     <div class="stat"><span>有效卡密</span><strong>{active_licenses}</strong></div>
                     <div class="stat"><span>封禁卡密</span><strong>{banned_licenses}</strong></div>
+                    <div class="stat"><span>今日登录用户</span><strong>{today_login_users}</strong></div>
                 </div>
             </section>
             <section>
@@ -122,6 +126,121 @@ pub async fn admin_dashboard(
     ))
 }
 
+pub async fn online_page(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> Result<Html<String>, Response> {
+    let owner_ids = visible_owner_ids(&state, &user).await?;
+    let online_licenses = online_licenses_for_owners(&state, &owner_ids).await?;
+    let mut rows = String::new();
+
+    for item in online_licenses {
+        let expires_at = item
+            .expires_at
+            .map(format_beijing_time)
+            .unwrap_or_else(|| "永久或未激活".to_string());
+        let last_seen_at = format_beijing_time(item.last_seen_at);
+
+        rows.push_str(&format!(
+            r#"
+            <tr>
+                <td><code>{}</code></td>
+                <td>{}</td>
+                <td>{}</td>
+                <td>{}</td>
+                <td>{}</td>
+                <td>{}</td>
+                <td>{}</td>
+            </tr>
+            "#,
+            escape(&item.license_key),
+            escape(&item.type_name),
+            escape(&item.owner_name),
+            escape(&item.machine_code),
+            escape(&item.ip_address),
+            escape(&last_seen_at),
+            escape(&expires_at)
+        ));
+    }
+
+    Ok(page(
+        "在线用户",
+        Some(&user),
+        format!(
+            r#"
+            <section>
+                <h1>在线用户</h1>
+                <p class="muted">最近 1 小时内成功验证过的卡密视为在线。</p>
+                <table>
+                    <thead>
+                        <tr><th>卡密</th><th>类型</th><th>归属</th><th>机器码</th><th>IP</th><th>最后验证时间</th><th>到期时间</th></tr>
+                    </thead>
+                    <tbody>{rows}</tbody>
+                </table>
+            </section>
+            "#
+        ),
+    ))
+}
+
+pub async fn settings_page(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> Result<Html<String>, Response> {
+    if user.role != "admin" {
+        return Err((StatusCode::FORBIDDEN, "只有管理员可以修改系统设置").into_response());
+    }
+
+    let limit = get_auto_rebind_limit(&state).await?;
+
+    Ok(page(
+        "系统设置",
+        Some(&user),
+        format!(
+            r#"
+            <section>
+                <h1>系统设置</h1>
+                <form method="post" action="/admin/settings">
+                    <label>每张卡密 24 小时自动换绑最大次数</label>
+                    <input name="auto_rebind_limit_per_24h" type="number" min="0" max="100" value="{limit}" required>
+                    <p class="muted">填 0 表示关闭自动换绑。达到限制后，新机器码验证会返回机器码不匹配。</p>
+                    <p><button type="submit">保存设置</button></p>
+                </form>
+            </section>
+            "#
+        ),
+    ))
+}
+
+pub async fn update_settings(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Form(form): Form<SettingsForm>,
+) -> Result<Redirect, Response> {
+    if user.role != "admin" {
+        return Err((StatusCode::FORBIDDEN, "只有管理员可以修改系统设置").into_response());
+    }
+
+    if form.auto_rebind_limit_per_24h < 0 || form.auto_rebind_limit_per_24h > 100 {
+        return Err((StatusCode::BAD_REQUEST, "自动换绑次数必须在 0 到 100 之间").into_response());
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO app_settings (key, value, updated_at)
+        VALUES ('auto_rebind_limit_per_24h', $1, NOW())
+        ON CONFLICT (key)
+        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        "#,
+    )
+    .bind(form.auto_rebind_limit_per_24h.to_string())
+    .execute(&state.pool)
+    .await
+    .map_err(internal_error)?;
+
+    Ok(Redirect::to("/admin/settings"))
+}
+
 pub async fn users_page(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -133,14 +252,33 @@ pub async fn users_page(
     let mut rows = String::new();
 
     for item in users {
+        let actions = if item.id == user.id || item.role == "admin" {
+            String::new()
+        } else {
+            format!(
+                r#"
+                <div class="actions">
+                    <form method="post" action="/admin/users/{}/password">
+                        <input name="password" type="password" placeholder="新密码" required>
+                        <button type="submit">改密码</button>
+                    </form>
+                    <form method="post" action="/admin/users/{}/delete">
+                        <button class="danger" type="submit">删除</button>
+                    </form>
+                </div>
+                "#,
+                item.id, item.id
+            )
+        };
         rows.push_str(&format!(
-            r#"<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>"#,
+            r#"<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>"#,
             item.id,
             escape(&item.username),
             escape(&item.role),
             item.parent_id
                 .map(|id| id.to_string())
-                .unwrap_or_else(|| "-".to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            actions
         ));
     }
 
@@ -158,7 +296,7 @@ pub async fn users_page(
             <section>
                 <h1>代理管理</h1>
                 <table>
-                    <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>上级 ID</th></tr></thead>
+                    <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>上级 ID</th><th>操作</th></tr></thead>
                     <tbody>{rows}</tbody>
                 </table>
             </section>
@@ -254,6 +392,88 @@ pub async fn create_user(
             internal_error(err)
         }
     })?;
+
+    Ok(Redirect::to("/admin/users"))
+}
+
+pub async fn update_user_password(
+    State(state): State<AppState>,
+    AuthUser(current_user): AuthUser,
+    Path(id): Path<i64>,
+    Form(form): Form<UpdateUserPasswordForm>,
+) -> Result<Redirect, Response> {
+    require_admin_or_agent(&current_user).await?;
+
+    if form.password.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "密码不能为空").into_response());
+    }
+
+    let target = get_user(&state, id).await?;
+    if target.role == "admin" {
+        return Err((StatusCode::FORBIDDEN, "不能在代理管理里修改管理员密码").into_response());
+    }
+
+    if !can_manage_owner(&current_user, target.id, target.parent_id) {
+        return Err((StatusCode::FORBIDDEN, "不能修改这个账号").into_response());
+    }
+
+    let password_hash = hash_password(&form.password)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "密码哈希失败").into_response())?;
+
+    sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+        .bind(password_hash)
+        .bind(target.id)
+        .execute(&state.pool)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Redirect::to("/admin/users"))
+}
+
+pub async fn delete_user(
+    State(state): State<AppState>,
+    AuthUser(current_user): AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Redirect, Response> {
+    require_admin_or_agent(&current_user).await?;
+
+    if id == current_user.id {
+        return Err((StatusCode::BAD_REQUEST, "不能删除当前登录账号").into_response());
+    }
+
+    let target = get_user(&state, id).await?;
+    if target.role == "admin" {
+        return Err((StatusCode::FORBIDDEN, "不能删除管理员账号").into_response());
+    }
+
+    if !can_manage_owner(&current_user, target.id, target.parent_id) {
+        return Err((StatusCode::FORBIDDEN, "不能删除这个账号").into_response());
+    }
+
+    let child_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE parent_id = $1")
+        .bind(target.id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(internal_error)?;
+    if child_count > 0 {
+        return Err((StatusCode::BAD_REQUEST, "账号下还有子代理，不能删除").into_response());
+    }
+
+    let license_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM licenses WHERE owner_id = $1")
+            .bind(target.id)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(internal_error)?;
+    if license_count > 0 {
+        return Err((StatusCode::BAD_REQUEST, "账号下还有卡密，不能删除").into_response());
+    }
+
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(target.id)
+        .execute(&state.pool)
+        .await
+        .map_err(internal_error)?;
 
     Ok(Redirect::to("/admin/users"))
 }
@@ -363,13 +583,22 @@ pub async fn licenses_page(
         let status = render_license_status(&item);
         let expires_at = item
             .expires_at
-            .map(|time| time.to_rfc3339())
+            .map(format_beijing_time)
             .unwrap_or_else(|| "永久或未激活".to_string());
+        let can_unbind = item.status != "banned" && item.machine_code.is_some();
         let machine_code = item.machine_code.unwrap_or_else(|| "-".to_string());
-        let action = if item.status == "banned" {
+        let ban_action = if item.status == "banned" {
             r#"<button type="submit">解封</button><input type="hidden" name="action" value="unban">"#
         } else {
             r#"<button class="danger" type="submit">封禁</button><input type="hidden" name="action" value="ban">"#
+        };
+        let unbind_action = if can_unbind {
+            format!(
+                r#"<form method="post" action="/admin/licenses/{}/unbind"><button type="submit">解绑</button></form>"#,
+                item.id
+            )
+        } else {
+            String::new()
         };
 
         rows.push_str(&format!(
@@ -382,7 +611,10 @@ pub async fn licenses_page(
                 <td>{}</td>
                 <td>{}</td>
                 <td>{}</td>
-                <td><form method="post" action="/admin/licenses/{}/ban">{}</form></td>
+                <td>
+                    <form method="post" action="/admin/licenses/{}/ban">{}</form>
+                    {}
+                </td>
             </tr>
             "#,
             item.id,
@@ -393,7 +625,8 @@ pub async fn licenses_page(
             escape(&machine_code),
             escape(&expires_at),
             item.id,
-            action
+            ban_action,
+            unbind_action
         ));
     }
 
@@ -490,32 +723,7 @@ pub async fn ban_license(
     Path(id): Path<i64>,
     Form(form): Form<BanLicenseForm>,
 ) -> Result<Redirect, Response> {
-    let license = sqlx::query_as::<_, License>(
-        r#"
-        SELECT
-            licenses.id,
-            licenses.license_key,
-            licenses.status,
-            licenses.machine_code,
-            licenses.expires_at,
-            licenses.owner_id,
-            users.username AS owner_name,
-            license_types.name AS type_name
-        FROM licenses
-        JOIN users ON users.id = licenses.owner_id
-        JOIN license_types ON license_types.id = licenses.type_id
-        WHERE licenses.id = $1
-        "#,
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(internal_error)?;
-
-    let Some(license) = license else {
-        return Err((StatusCode::NOT_FOUND, "卡密不存在").into_response());
-    };
-
+    let license = license_by_id(&state, id).await?;
     let owner = get_user(&state, license.owner_id).await?;
     if !can_manage_owner(&user, owner.id, owner.parent_id) {
         return Err((StatusCode::FORBIDDEN, "不能管理这张卡密").into_response());
@@ -535,6 +743,31 @@ pub async fn ban_license(
 
     sqlx::query("UPDATE licenses SET status = $1 WHERE id = $2")
         .bind(new_status)
+        .bind(license.id)
+        .execute(&state.pool)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Redirect::to("/admin/licenses"))
+}
+
+pub async fn unbind_license(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Redirect, Response> {
+    let license = license_by_id(&state, id).await?;
+    let owner = get_user(&state, license.owner_id).await?;
+
+    if !can_manage_owner(&user, owner.id, owner.parent_id) {
+        return Err((StatusCode::FORBIDDEN, "不能管理这张卡密").into_response());
+    }
+
+    if license.status == "banned" {
+        return Err((StatusCode::BAD_REQUEST, "已封禁卡密不能解绑").into_response());
+    }
+
+    sqlx::query("UPDATE licenses SET machine_code = NULL, status = 'unused' WHERE id = $1")
         .bind(license.id)
         .execute(&state.pool)
         .await
@@ -576,6 +809,32 @@ async fn get_user(state: &AppState, user_id: i64) -> Result<SessionUser, Respons
     .map_err(internal_error)?;
 
     user.ok_or_else(|| (StatusCode::BAD_REQUEST, "账号不存在").into_response())
+}
+
+async fn license_by_id(state: &AppState, id: i64) -> Result<License, Response> {
+    let license = sqlx::query_as::<_, License>(
+        r#"
+        SELECT
+            licenses.id,
+            licenses.license_key,
+            licenses.status,
+            licenses.machine_code,
+            licenses.expires_at,
+            licenses.owner_id,
+            users.username AS owner_name,
+            license_types.name AS type_name
+        FROM licenses
+        JOIN users ON users.id = licenses.owner_id
+        JOIN license_types ON license_types.id = licenses.type_id
+        WHERE licenses.id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal_error)?;
+
+    license.ok_or_else(|| (StatusCode::NOT_FOUND, "卡密不存在").into_response())
 }
 
 async fn visible_users(state: &AppState, user: &SessionUser) -> Result<Vec<SessionUser>, Response> {
@@ -663,6 +922,76 @@ async fn count_licenses_by_owners(
     }
 }
 
+async fn count_today_login_users(state: &AppState, owner_ids: &[i64]) -> Result<i64, Response> {
+    if owner_ids.is_empty() {
+        return Ok(0);
+    }
+
+    sqlx::query_scalar(
+        r#"
+        SELECT COUNT(DISTINCT verify_logs.license_id)
+        FROM verify_logs
+        JOIN licenses ON licenses.id = verify_logs.license_id
+        WHERE licenses.owner_id = ANY($1)
+          AND verify_logs.result = 'valid'
+          AND verify_logs.created_at >= date_trunc('day', NOW())
+          AND verify_logs.created_at < date_trunc('day', NOW()) + INTERVAL '1 day'
+        "#,
+    )
+    .bind(owner_ids)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(internal_error)
+}
+
+async fn online_licenses_for_owners(
+    state: &AppState,
+    owner_ids: &[i64],
+) -> Result<Vec<OnlineLicense>, Response> {
+    if owner_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_as::<_, OnlineLicense>(
+        r#"
+        SELECT DISTINCT ON (licenses.id)
+            licenses.license_key,
+            license_types.name AS type_name,
+            users.username AS owner_name,
+            verify_logs.machine_code,
+            verify_logs.ip_address,
+            verify_logs.created_at AS last_seen_at,
+            licenses.expires_at
+        FROM verify_logs
+        JOIN licenses ON licenses.id = verify_logs.license_id
+        JOIN users ON users.id = licenses.owner_id
+        JOIN license_types ON license_types.id = licenses.type_id
+        WHERE licenses.owner_id = ANY($1)
+          AND verify_logs.result = 'valid'
+          AND verify_logs.created_at >= NOW() - INTERVAL '1 hour'
+        ORDER BY licenses.id, verify_logs.created_at DESC
+        LIMIT 300
+        "#,
+    )
+    .bind(owner_ids)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal_error)
+}
+
+async fn get_auto_rebind_limit(state: &AppState) -> Result<i32, Response> {
+    let value: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM app_settings WHERE key = 'auto_rebind_limit_per_24h'",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal_error)?;
+
+    Ok(value
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(1))
+}
+
 async fn licenses_for_owners(
     state: &AppState,
     owner_ids: &[i64],
@@ -748,6 +1077,11 @@ fn render_license_status(item: &License) -> String {
         "active" => "有效".to_string(),
         other => escape(other),
     }
+}
+
+fn format_beijing_time(time: chrono::DateTime<chrono::Utc>) -> String {
+    time.with_timezone(&FixedOffset::east_opt(8 * 3600).expect("valid Beijing timezone offset"))
+        .to_rfc3339()
 }
 
 fn internal_error(err: sqlx::Error) -> Response {

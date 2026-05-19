@@ -14,7 +14,7 @@
 ## 环境变量
 
 ```bash
-export DATABASE_URL='postgres://postgres:postgres@localhost:5432/license_server'
+export DATABASE_URL='postgres://postgres:manong666.@localhost:5432/license_server'
 export ADMIN_USER='admin'
 export ADMIN_PASSWORD='admin123'
 export SERVER_ADDR='0.0.0.0:3000'
@@ -50,10 +50,10 @@ http://127.0.0.1:3000/login
 ## 客户端验证 API
 
 ```bash
-curl -X POST 'http://127.0.0.1:3000/api/verify' \
+curl -X POST 'http://152.136.226.83:3000/api/verify' \
   -H 'Content-Type: application/json' \
   -H 'X-Api-Key: change-me-api-key' \
-  -d '{"license_key":"LIC-xxxx","machine_code":"机器码-001"}'
+  -d '{"license_key":"LIC-03a5f94d3e3a4f239b76f36d829d4115","machine_code":"机器码-001"}'
 ```
 
 返回示例：

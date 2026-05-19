@@ -21,7 +21,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/license_server
+      DATABASE_URL: postgres://postgres:manong666.@postgres:5432/license_server
       ADMIN_USER: admin
       ADMIN_PASSWORD: admin123
       SERVER_ADDR: 0.0.0.0:3000

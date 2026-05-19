@@ -1,11 +1,14 @@
 services:
   builder:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile.builder
-    image: license-server-builder:rust-1.95
+    image: license-server-builder:x86_64-rust-1.95
     container_name: license-server-builder
     working_dir: /workspace
+    stdin_open: true
+    tty: true
     volumes:
       - .:/workspace
       - cargo-registry:/usr/local/cargo/registry
@@ -13,7 +16,7 @@ services:
       - ./target:/workspace/target
     environment:
       CARGO_HOME: /usr/local/cargo
-    command: cargo build --release
+    command: sleep infinity
 
 volumes:
   cargo-registry:
