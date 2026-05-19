@@ -39,6 +39,7 @@ pub async fn init_database(pool: &PgPool) -> Result<(), sqlx::Error> {
             machine_code TEXT,
             activated_at TIMESTAMPTZ,
             expires_at TIMESTAMPTZ,
+            remark TEXT NOT NULL DEFAULT '',
             owner_id BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
             type_id BIGINT NOT NULL REFERENCES license_types(id) ON DELETE RESTRICT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -46,6 +47,9 @@ pub async fn init_database(pool: &PgPool) -> Result<(), sqlx::Error> {
         "#,
     )
     .await?;
+
+    pool.execute("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT ''")
+        .await?;
 
     // verify_logs 保存每次客户端验证记录，方便排查卡密滥用、IP 变化、机器码冲突等问题。
     pool.execute(

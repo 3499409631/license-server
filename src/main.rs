@@ -18,9 +18,10 @@ use sqlx::PgPool;
 
 use crate::{
     admin::{
-        admin_dashboard, ban_license, create_license, create_license_type, create_user,
-        delete_user, licenses_page, login_form, login_submit, logout, online_page, settings_page,
-        types_page, unbind_license, update_settings, update_user_password, users_page,
+        adjust_license_time, adjust_licenses_time, admin_dashboard, ban_license, create_license,
+        create_license_type, create_user, delete_user, licenses_page, login_form, login_submit,
+        logout, new_license_page, online_page, settings_page, types_page, unbind_license,
+        update_settings, update_user_password, users_page,
     },
     api::verify_license,
     auth::bootstrap_admin,
@@ -69,6 +70,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/admin/users/{id}/delete", post(delete_user))
         .route("/admin/types", get(types_page).post(create_license_type))
         .route("/admin/licenses", get(licenses_page).post(create_license))
+        .route("/admin/licenses/new", get(new_license_page))
+        .route("/admin/licenses/time", post(adjust_licenses_time))
+        .route("/admin/licenses/{id}/time", post(adjust_license_time))
         .route("/admin/licenses/{id}/ban", post(ban_license))
         .route("/admin/licenses/{id}/unbind", post(unbind_license))
         .with_state(state);

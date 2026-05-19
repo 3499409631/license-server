@@ -167,8 +167,8 @@ async fn verify_license_payload(
         }
     }
 
-    if let Some(bound_machine_code) = &license.machine_code {
-        if bound_machine_code != &payload.machine_code {
+    match (&license.machine_code, license.status.as_str()) {
+        (Some(bound_machine_code), _) if bound_machine_code != &payload.machine_code => {
             let rebind_result = try_auto_rebind(
                 &state.pool,
                 license.id,
@@ -225,6 +225,67 @@ async fn verify_license_payload(
                 }
             }
         }
+        (None, "active") => {
+            let updated = sqlx::query(
+                r#"
+                UPDATE licenses
+                SET machine_code = $1
+                WHERE id = $2 AND status = 'active' AND machine_code IS NULL
+                "#,
+            )
+            .bind(&payload.machine_code)
+            .bind(license.id)
+            .execute(&state.pool)
+            .await;
+
+            let Ok(updated) = updated else {
+                return VerifyResponse {
+                    status: "error".to_string(),
+                    message: "绑定机器码失败".to_string(),
+                    expires_at: None,
+                    license_type: None,
+                };
+            };
+
+            if updated.rows_affected() == 0 {
+                let current_machine_code: Option<String> =
+                    match sqlx::query_scalar("SELECT machine_code FROM licenses WHERE id = $1")
+                        .bind(license.id)
+                        .fetch_optional(&state.pool)
+                        .await
+                    {
+                        Ok(value) => value.flatten(),
+                        Err(_) => {
+                            return VerifyResponse {
+                                status: "error".to_string(),
+                                message: "读取机器码失败".to_string(),
+                                expires_at: None,
+                                license_type: None,
+                            };
+                        }
+                    };
+
+                if current_machine_code.as_deref() != Some(payload.machine_code.as_str()) {
+                    log_verify(
+                        &state.pool,
+                        Some(license.id),
+                        &payload.license_key,
+                        &payload.machine_code,
+                        &ip_address,
+                        "machine_mismatch",
+                    )
+                    .await;
+
+                    return VerifyResponse {
+                        status: "machine_mismatch".to_string(),
+                        message: "机器码不匹配".to_string(),
+                        expires_at: expires_at.map(format_beijing_time),
+                        license_type: Some(license.type_name),
+                    };
+                }
+            }
+        }
+        _ => {}
     }
 
     if license.status == "unused" {

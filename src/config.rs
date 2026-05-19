@@ -23,11 +23,11 @@ impl Config {
             admin_password: env::var("ADMIN_PASSWORD").unwrap_or_else(|_| "Manong666.".to_string()),
             server_addr: env::var("SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string()),
             app_api_key: env::var("APP_API_KEY")
-                .unwrap_or_else(|_| "change-me-api-key".to_string()),
+                .unwrap_or_else(|_| "901F0CF02D2B48D19966A4947E884398".to_string()),
             client_aes_key: env::var("CLIENT_AES_KEY")
-                .unwrap_or_else(|_| "client-aes-key-32-bytes-demo!!!!".to_string()),
+                .unwrap_or_else(|_| "E0DC0CC761604122A06648A4BE9893EE".to_string()),
             server_aes_key: env::var("SERVER_AES_KEY")
-                .unwrap_or_else(|_| "server-aes-key-32-bytes-demo!!!!".to_string()),
+                .unwrap_or_else(|_| "CBD0782890A041E2A8666D9668C43F25".to_string()),
         };
 
         validate_aes_key(&config.client_aes_key)

@@ -32,11 +32,11 @@ struct VerifyResponse {
 async fn main() -> Result<(), Box<dyn Error>> {
     let api_url = env::var("VERIFY_API_URL")
         .unwrap_or_else(|_| "http://1.15.171.108:3000/api/verify".to_string());
-    let api_key = env::var("APP_API_KEY").unwrap_or_else(|_| "change-me-api-key".to_string());
+    let api_key = env::var("APP_API_KEY").unwrap_or_else(|_| "901F0CF02D2B48D19966A4947E884398".to_string());
     let client_aes_key = env::var("CLIENT_AES_KEY")
-        .unwrap_or_else(|_| "client-aes-key-32-bytes-demo!!!!".to_string());
+        .unwrap_or_else(|_| "E0DC0CC761604122A06648A4BE9893EE".to_string());
     let server_aes_key = env::var("SERVER_AES_KEY")
-        .unwrap_or_else(|_| "server-aes-key-32-bytes-demo!!!!".to_string());
+        .unwrap_or_else(|_| "CBD0782890A041E2A8666D9668C43F25".to_string());
 
     let request = VerifyRequest {
         license_key: env::var("LICENSE_KEY").unwrap_or_else(|_| "LIC-f55f3d691ef24774b60d6c12eb4576ac".to_string()),

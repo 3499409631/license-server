@@ -28,10 +28,12 @@ pub struct License {
     pub license_key: String,
     pub status: String,
     pub machine_code: Option<String>,
+    pub activated_at: Option<chrono::DateTime<chrono::Utc>>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub owner_id: i64,
     pub owner_name: String,
     pub type_name: String,
+    pub remark: String,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -94,11 +96,30 @@ pub struct CreateLicenseForm {
     pub type_id: i64,
     pub owner_id: i64,
     pub count: i32,
+    pub remark: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct BanLicenseForm {
     pub action: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct LicenseFilters {
+    pub q: Option<String>,
+    pub activation_status: Option<String>,
+    pub expiry_status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdjustLicenseTimeForm {
+    pub hours: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdjustLicensesTimeForm {
+    pub hours: i32,
+    pub scope: String,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,6 +1,6 @@
 use axum::{
     Form,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header::SET_COOKIE},
     response::{Html, IntoResponse, Redirect, Response},
 };
@@ -16,9 +16,9 @@ use crate::{
     },
     html::{escape, page},
     models::{
-        BanLicenseForm, CreateLicenseForm, CreateLicenseTypeForm, CreateUserForm, License,
-        LicenseType, LoginForm, OnlineLicense, SessionUser, SettingsForm, UpdateUserPasswordForm,
-        User,
+        AdjustLicenseTimeForm, AdjustLicensesTimeForm, BanLicenseForm, CreateLicenseForm,
+        CreateLicenseTypeForm, CreateUserForm, License, LicenseFilters, LicenseType, LoginForm,
+        OnlineLicense, SessionUser, SettingsForm, UpdateUserPasswordForm, User,
     },
 };
 
@@ -567,16 +567,14 @@ pub async fn create_license_type(
 pub async fn licenses_page(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
+    Query(filters): Query<LicenseFilters>,
 ) -> Result<Html<String>, Response> {
     let owners = visible_users(&state, &user).await?;
     let owner_ids: Vec<i64> = owners.iter().map(|owner| owner.id).collect();
-    let licenses = licenses_for_owners(&state, &owner_ids).await?;
-    let types = sqlx::query_as::<_, LicenseType>(
-        "SELECT id, name, duration_days FROM license_types ORDER BY id DESC",
-    )
-    .fetch_all(&state.pool)
-    .await
-    .map_err(internal_error)?;
+    let licenses = licenses_for_owners(&state, &owner_ids, &filters).await?;
+    let query = filters.q.as_deref().unwrap_or_default();
+    let activation_status = normalized_filter(filters.activation_status.as_deref());
+    let expiry_status = normalized_filter(filters.expiry_status.as_deref());
 
     let mut rows = String::new();
     for item in licenses {
@@ -587,6 +585,11 @@ pub async fn licenses_page(
             .unwrap_or_else(|| "永久或未激活".to_string());
         let can_unbind = item.status != "banned" && item.machine_code.is_some();
         let machine_code = item.machine_code.unwrap_or_else(|| "-".to_string());
+        let remark = if item.remark.trim().is_empty() {
+            "-".to_string()
+        } else {
+            item.remark.clone()
+        };
         let ban_action = if item.status == "banned" {
             r#"<button type="submit">解封</button><input type="hidden" name="action" value="unban">"#
         } else {
@@ -611,24 +614,118 @@ pub async fn licenses_page(
                 <td>{}</td>
                 <td>{}</td>
                 <td>{}</td>
+                <td>{}</td>
                 <td>
-                    <form method="post" action="/admin/licenses/{}/ban">{}</form>
-                    {}
+                    <div class="actions">
+                        <form method="post" action="/admin/licenses/{}/time">
+                            <input name="hours" type="number" min="-87600" max="87600" placeholder="小时" required>
+                            <button class="secondary" type="submit">调整</button>
+                        </form>
+                        <form method="post" action="/admin/licenses/{}/ban">{}</form>
+                        {}
+                    </div>
                 </td>
             </tr>
             "#,
             item.id,
             escape(&item.license_key),
             escape(&item.type_name),
+            escape(&remark),
             escape(&item.owner_name),
             status,
             escape(&machine_code),
             escape(&expires_at),
             item.id,
+            item.id,
             ban_action,
             unbind_action
         ));
     }
+
+    let global_time_form = if user.role == "admin" {
+        r#"
+            <section>
+                <h2>全局调整时间</h2>
+                <form method="post" action="/admin/licenses/time" class="filters">
+                    <div>
+                        <label>调整小时数</label>
+                        <input name="hours" type="number" min="-87600" max="87600" placeholder="例如 24 或 -24" required>
+                    </div>
+                    <div>
+                        <label>调整范围</label>
+                        <select name="scope">
+                            <option value="active_only">仅未到期卡密</option>
+                            <option value="all_with_expired">包含已到期卡密</option>
+                        </select>
+                    </div>
+                    <p><button type="submit">全局调整</button></p>
+                </form>
+                <p class="muted">只会调整已有到期时间的卡密，永久卡和未激活无到期卡会跳过。</p>
+            </section>
+        "#
+    } else {
+        ""
+    };
+
+    Ok(page(
+        "卡密管理",
+        Some(&user),
+        format!(
+            r#"
+            <section>
+                <h1>卡密管理</h1>
+                <form method="get" action="/admin/licenses" class="filters">
+                    <div>
+                        <label>搜索</label>
+                        <input name="q" value="{}" placeholder="卡密 / 备注 / 归属 / 机器码">
+                    </div>
+                    <div>
+                        <label>激活状态</label>
+                        <select name="activation_status">
+                            {}
+                        </select>
+                    </div>
+                    <div>
+                        <label>到期状态</label>
+                        <select name="expiry_status">
+                            {}
+                        </select>
+                    </div>
+                    <p>
+                        <button type="submit">筛选</button>
+                        <a href="/admin/licenses">清空</a>
+                    </p>
+                </form>
+            </section>
+            <section>
+                <table>
+                    <thead>
+                        <tr><th>ID</th><th>卡密</th><th>类型</th><th>备注</th><th>归属</th><th>状态</th><th>机器码</th><th>到期时间</th><th>操作</th></tr>
+                    </thead>
+                    <tbody>{rows}</tbody>
+                </table>
+                <p class="muted">最多显示 300 条结果。</p>
+            </section>
+            {global_time_form}
+            "#,
+            escape(query),
+            activation_filter_options(activation_status),
+            expiry_filter_options(expiry_status)
+        ),
+    ))
+}
+
+pub async fn new_license_page(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> Result<Html<String>, Response> {
+    let owners = visible_users(&state, &user).await?;
+    let types = sqlx::query_as::<_, LicenseType>(
+        "SELECT id, name, duration_days FROM license_types ORDER BY id DESC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal_error)?;
 
     let mut type_options = String::new();
     for item in types {
@@ -640,35 +737,27 @@ pub async fn licenses_page(
         ));
     }
 
-    let owner_options = owner_options_html(&owners);
-
     Ok(page(
-        "卡密管理",
+        "生成卡密",
         Some(&user),
         format!(
             r#"
             <section>
-                <h1>卡密管理</h1>
-                <table>
-                    <thead>
-                        <tr><th>ID</th><th>卡密</th><th>类型</th><th>归属</th><th>状态</th><th>机器码</th><th>到期时间</th><th>操作</th></tr>
-                    </thead>
-                    <tbody>{rows}</tbody>
-                </table>
-            </section>
-            <section>
-                <h2>生成卡密</h2>
+                <h1>生成卡密</h1>
                 <form method="post" action="/admin/licenses">
                     <label>卡密类型</label>
                     <select name="type_id">{type_options}</select>
                     <label>归属账号</label>
-                    <select name="owner_id">{owner_options}</select>
+                    <select name="owner_id">{}</select>
                     <label>生成数量</label>
                     <input name="count" type="number" min="1" max="100" value="1" required>
+                    <label>备注</label>
+                    <textarea name="remark" maxlength="500" placeholder="可选，生成的每张卡密都会使用这条备注"></textarea>
                     <p><button type="submit">生成</button></p>
                 </form>
             </section>
-            "#
+            "#,
+            owner_options_html(&owners)
         ),
     ))
 }
@@ -697,18 +786,24 @@ pub async fn create_license(
         return Err((StatusCode::BAD_REQUEST, "卡密类型不存在").into_response());
     }
 
+    let remark = form.remark.unwrap_or_default().trim().to_string();
+    if remark.chars().count() > 500 {
+        return Err((StatusCode::BAD_REQUEST, "备注最多 500 个字符").into_response());
+    }
+
     for _ in 0..form.count {
         let license_key = format!("LIC-{}", Uuid::new_v4().simple());
 
         sqlx::query(
             r#"
-            INSERT INTO licenses (license_key, owner_id, type_id)
-            VALUES ($1, $2, $3)
+            INSERT INTO licenses (license_key, owner_id, type_id, remark)
+            VALUES ($1, $2, $3, $4)
             "#,
         )
         .bind(license_key)
         .bind(owner.id)
         .bind(form.type_id)
+        .bind(&remark)
         .execute(&state.pool)
         .await
         .map_err(internal_error)?;
@@ -732,7 +827,7 @@ pub async fn ban_license(
     let new_status = match form.action.as_str() {
         "ban" => "banned",
         "unban" => {
-            if license.machine_code.is_some() {
+            if license.activated_at.is_some() || license.machine_code.is_some() {
                 "active"
             } else {
                 "unused"
@@ -767,11 +862,87 @@ pub async fn unbind_license(
         return Err((StatusCode::BAD_REQUEST, "已封禁卡密不能解绑").into_response());
     }
 
-    sqlx::query("UPDATE licenses SET machine_code = NULL, status = 'unused' WHERE id = $1")
+    sqlx::query("UPDATE licenses SET machine_code = NULL WHERE id = $1")
         .bind(license.id)
         .execute(&state.pool)
         .await
         .map_err(internal_error)?;
+
+    Ok(Redirect::to("/admin/licenses"))
+}
+
+pub async fn adjust_license_time(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<i64>,
+    Form(form): Form<AdjustLicenseTimeForm>,
+) -> Result<Redirect, Response> {
+    validate_adjust_hours(form.hours)?;
+
+    let license = license_by_id(&state, id).await?;
+    let owner = get_user(&state, license.owner_id).await?;
+    if !can_manage_owner(&user, owner.id, owner.parent_id) {
+        return Err((StatusCode::FORBIDDEN, "不能管理这张卡密").into_response());
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE licenses
+        SET expires_at = expires_at + ($1 * INTERVAL '1 hour')
+        WHERE id = $2 AND expires_at IS NOT NULL
+        "#,
+    )
+    .bind(form.hours)
+    .bind(license.id)
+    .execute(&state.pool)
+    .await
+    .map_err(internal_error)?;
+
+    Ok(Redirect::to("/admin/licenses"))
+}
+
+pub async fn adjust_licenses_time(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Form(form): Form<AdjustLicensesTimeForm>,
+) -> Result<Redirect, Response> {
+    if user.role != "admin" {
+        return Err((StatusCode::FORBIDDEN, "只有管理员可以全局调整卡密时间").into_response());
+    }
+
+    validate_adjust_hours(form.hours)?;
+
+    match form.scope.as_str() {
+        "active_only" => {
+            sqlx::query(
+                r#"
+                UPDATE licenses
+                SET expires_at = expires_at + ($1 * INTERVAL '1 hour')
+                WHERE expires_at IS NOT NULL
+                  AND expires_at > NOW()
+                  AND status != 'banned'
+                "#,
+            )
+            .bind(form.hours)
+            .execute(&state.pool)
+            .await
+            .map_err(internal_error)?;
+        }
+        "all_with_expired" => {
+            sqlx::query(
+                r#"
+                UPDATE licenses
+                SET expires_at = expires_at + ($1 * INTERVAL '1 hour')
+                WHERE expires_at IS NOT NULL
+                "#,
+            )
+            .bind(form.hours)
+            .execute(&state.pool)
+            .await
+            .map_err(internal_error)?;
+        }
+        _ => return Err((StatusCode::BAD_REQUEST, "未知调整范围").into_response()),
+    }
 
     Ok(Redirect::to("/admin/licenses"))
 }
@@ -819,10 +990,12 @@ async fn license_by_id(state: &AppState, id: i64) -> Result<License, Response> {
             licenses.license_key,
             licenses.status,
             licenses.machine_code,
+            licenses.activated_at,
             licenses.expires_at,
             licenses.owner_id,
             users.username AS owner_name,
-            license_types.name AS type_name
+            license_types.name AS type_name,
+            licenses.remark
         FROM licenses
         JOIN users ON users.id = licenses.owner_id
         JOIN license_types ON license_types.id = licenses.type_id
@@ -995,10 +1168,16 @@ async fn get_auto_rebind_limit(state: &AppState) -> Result<i32, Response> {
 async fn licenses_for_owners(
     state: &AppState,
     owner_ids: &[i64],
+    filters: &LicenseFilters,
 ) -> Result<Vec<License>, Response> {
     if owner_ids.is_empty() {
         return Ok(Vec::new());
     }
+
+    let query = filters.q.as_deref().map(str::trim).unwrap_or_default();
+    let query_pattern = format!("%{}%", query);
+    let activation_status = normalized_filter(filters.activation_status.as_deref()).to_string();
+    let expiry_status = normalized_filter(filters.expiry_status.as_deref()).to_string();
 
     sqlx::query_as::<_, License>(
         r#"
@@ -1007,19 +1186,45 @@ async fn licenses_for_owners(
             licenses.license_key,
             licenses.status,
             licenses.machine_code,
+            licenses.activated_at,
             licenses.expires_at,
             licenses.owner_id,
             users.username AS owner_name,
-            license_types.name AS type_name
+            license_types.name AS type_name,
+            licenses.remark
         FROM licenses
         JOIN users ON users.id = licenses.owner_id
         JOIN license_types ON license_types.id = licenses.type_id
         WHERE licenses.owner_id = ANY($1)
+          AND (
+              $2 = ''
+              OR licenses.license_key ILIKE $3
+              OR licenses.remark ILIKE $3
+              OR users.username ILIKE $3
+              OR COALESCE(licenses.machine_code, '') ILIKE $3
+          )
+          AND (
+              $4 = ''
+              OR ($4 = 'unused' AND licenses.status = 'unused')
+              OR ($4 = 'active' AND licenses.status = 'active')
+              OR ($4 = 'active_unbound' AND licenses.status = 'active' AND licenses.machine_code IS NULL)
+              OR ($4 = 'banned' AND licenses.status = 'banned')
+          )
+          AND (
+              $5 = ''
+              OR ($5 = 'not_expired' AND licenses.expires_at IS NOT NULL AND licenses.expires_at > NOW())
+              OR ($5 = 'expired' AND licenses.expires_at IS NOT NULL AND licenses.expires_at <= NOW())
+              OR ($5 = 'no_expiry' AND licenses.expires_at IS NULL)
+          )
         ORDER BY licenses.id DESC
         LIMIT 300
         "#,
     )
     .bind(owner_ids)
+    .bind(query)
+    .bind(query_pattern)
+    .bind(activation_status)
+    .bind(expiry_status)
     .fetch_all(&state.pool)
     .await
     .map_err(internal_error)
@@ -1061,6 +1266,67 @@ fn owner_options_html(users: &[SessionUser]) -> String {
     html
 }
 
+fn normalized_filter(value: Option<&str>) -> &str {
+    value.map(str::trim).unwrap_or_default()
+}
+
+fn activation_filter_options(selected: &str) -> String {
+    select_options(
+        &[
+            ("", "全部"),
+            ("unused", "未激活"),
+            ("active", "已激活"),
+            ("active_unbound", "已激活未绑定"),
+            ("banned", "已封禁"),
+        ],
+        selected,
+    )
+}
+
+fn expiry_filter_options(selected: &str) -> String {
+    select_options(
+        &[
+            ("", "全部"),
+            ("not_expired", "未到期"),
+            ("expired", "已到期"),
+            ("no_expiry", "永久或未设置到期"),
+        ],
+        selected,
+    )
+}
+
+fn select_options(options: &[(&str, &str)], selected: &str) -> String {
+    let mut html = String::new();
+
+    for (value, label) in options {
+        let selected_attr = if *value == selected { " selected" } else { "" };
+        html.push_str(&format!(
+            r#"<option value="{}"{}>{}</option>"#,
+            escape(value),
+            selected_attr,
+            escape(label)
+        ));
+    }
+
+    html
+}
+
+fn validate_adjust_hours(hours: i32) -> Result<(), Response> {
+    if hours == 0 {
+        return Err((StatusCode::BAD_REQUEST, "调整小时数不能为 0").into_response());
+    }
+
+    if !(-87_600..=87_600).contains(&hours) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "调整小时数必须在 -87600 到 87600 之间",
+        )
+            .into_response());
+    }
+
+    Ok(())
+}
+
 fn render_license_status(item: &License) -> String {
     if item.status == "banned" {
         return "已封禁".to_string();
@@ -1074,6 +1340,7 @@ fn render_license_status(item: &License) -> String {
 
     match item.status.as_str() {
         "unused" => "未激活".to_string(),
+        "active" if item.machine_code.is_none() => "已激活未绑定".to_string(),
         "active" => "有效".to_string(),
         other => escape(other),
     }

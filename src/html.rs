@@ -11,7 +11,8 @@ pub fn page(title: &str, user: Option<&SessionUser>, body: String) -> Html<Strin
                 <a href="/admin">首页</a>
                 <a href="/admin/users">代理</a>
                 <a href="/admin/types">类型</a>
-                <a href="/admin/licenses">卡密</a>
+                <a href="/admin/licenses">卡密管理</a>
+                <a href="/admin/licenses/new">生成卡密</a>
                 <a href="/admin/online">在线</a>
                 <a href="/admin/settings">设置</a>
                 <span>{} ({})</span>
@@ -45,8 +46,10 @@ pub fn page(title: &str, user: Option<&SessionUser>, body: String) -> Html<Strin
                 th {{ background: #f0f3f7; }}
                 label {{ display: block; font-weight: 600; margin: 10px 0 4px; }}
                 input, select {{ width: 100%; max-width: 360px; box-sizing: border-box; padding: 8px 10px; border: 1px solid #c8d0dc; border-radius: 6px; }}
+                textarea {{ width: 100%; max-width: 520px; box-sizing: border-box; padding: 8px 10px; border: 1px solid #c8d0dc; border-radius: 6px; min-height: 76px; }}
                 button {{ padding: 8px 12px; border: 1px solid #1f6fb2; background: #1f6fb2; color: white; border-radius: 6px; cursor: pointer; }}
                 .danger {{ border-color: #b42318; background: #b42318; }}
+                .secondary {{ border-color: #697586; background: #697586; }}
                 .muted {{ color: #697586; }}
                 .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
                 .stat {{ border: 1px solid #d9dee7; border-radius: 8px; padding: 14px; }}
@@ -55,6 +58,10 @@ pub fn page(title: &str, user: Option<&SessionUser>, body: String) -> Html<Strin
                 .actions {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
                 .actions form {{ display: flex; gap: 8px; align-items: center; margin: 0; }}
                 .actions input {{ width: 160px; }}
+                .filters {{ display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }}
+                .filters label {{ margin-top: 0; }}
+                .filters input, .filters select {{ max-width: 220px; }}
+                .nowrap {{ white-space: nowrap; }}
             </style>
         </head>
         <body>

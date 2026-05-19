@@ -149,7 +149,7 @@ export DATABASE_URL='postgres://postgres:manong666.@127.0.0.1:5432/license_serve
 export ADMIN_USER='admin'
 export ADMIN_PASSWORD='Manong1314520.'
 export SERVER_ADDR='0.0.0.0:3000'
-export APP_API_KEY='change-me-api-key'
+export APP_API_KEY='901F0CF02D2B48D19966A4947E884398'
 export CLIENT_AES_KEY='client-aes-key-32-bytes-demo!!!!'
 export SERVER_AES_KEY='server-aes-key-32-bytes-demo!!!!'
 
@@ -170,7 +170,7 @@ http://127.0.0.1:3000/login
 
 ```bash
 export VERIFY_API_URL='http://1.15.171.108:3000/api/verify'
-export APP_API_KEY='change-me-api-key'
+export APP_API_KEY='901F0CF02D2B48D19966A4947E884398'
 export CLIENT_AES_KEY='client-aes-key-32-bytes-demo!!!!'
 export SERVER_AES_KEY='server-aes-key-32-bytes-demo!!!!'
 export LICENSE_KEY='LIC-f55f3d691ef24774b60d6c12eb4576ac'
