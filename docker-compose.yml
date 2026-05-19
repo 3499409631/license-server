@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: docker.m.daocloud.io/library/postgres:16
+    container_name: license-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: license_server
+    volumes:
+      - license-postgres-data:/var/lib/postgresql/data
+
+  license-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: license-server:latest
+    container_name: license-server
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/license_server
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: admin123
+      SERVER_ADDR: 0.0.0.0:3000
+      APP_API_KEY: change-me-api-key
+
+volumes:
+  license-postgres-data:

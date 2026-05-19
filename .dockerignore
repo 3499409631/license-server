@@ -1,0 +1,7 @@
+target
+.git
+.DS_Store
+Dockerfile
+Dockerfile.builder
+docker-compose.yml
+docker-compose.build.yml
