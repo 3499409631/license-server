@@ -1,7 +1,7 @@
 # license-server
 
 一个用 Rust + Axum + PostgreSQL 实现的卡密验证系统示例，包含客户端验证 API 和后台管理网页。
-
+该项目只是用于学习rust为目的而编写的 你需要自行修改一些东西 例如数据库密码 服务端与客户端的aes key 
 ## 功能
 
 - 客户端通过 `POST /api/verify` 验证卡密。
