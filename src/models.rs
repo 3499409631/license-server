@@ -19,6 +19,7 @@ pub struct SessionUser {
 pub struct LicenseType {
     pub id: i64,
     pub name: String,
+    pub prefix: String,
     pub duration_days: i32,
 }
 
@@ -88,6 +89,7 @@ pub struct UpdateUserPasswordForm {
 #[derive(Debug, Deserialize)]
 pub struct CreateLicenseTypeForm {
     pub name: String,
+    pub prefix: String,
     pub duration_days: i32,
 }
 

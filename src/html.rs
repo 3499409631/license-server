@@ -47,6 +47,7 @@ pub fn page(title: &str, user: Option<&SessionUser>, body: String) -> Html<Strin
                 label {{ display: block; font-weight: 600; margin: 10px 0 4px; }}
                 input, select {{ width: 100%; max-width: 360px; box-sizing: border-box; padding: 8px 10px; border: 1px solid #c8d0dc; border-radius: 6px; }}
                 textarea {{ width: 100%; max-width: 520px; box-sizing: border-box; padding: 8px 10px; border: 1px solid #c8d0dc; border-radius: 6px; min-height: 76px; }}
+                textarea.generated-licenses {{ max-width: 720px; min-height: 180px; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }}
                 button {{ padding: 8px 12px; border: 1px solid #1f6fb2; background: #1f6fb2; color: white; border-radius: 6px; cursor: pointer; }}
                 .danger {{ border-color: #b42318; background: #b42318; }}
                 .secondary {{ border-color: #697586; background: #697586; }}
@@ -61,6 +62,7 @@ pub fn page(title: &str, user: Option<&SessionUser>, body: String) -> Html<Strin
                 .filters {{ display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }}
                 .filters label {{ margin-top: 0; }}
                 .filters input, .filters select {{ max-width: 220px; }}
+                .remark-cell {{ min-width: 120px; max-width: 260px; white-space: normal; word-break: break-word; overflow-wrap: anywhere; }}
                 .nowrap {{ white-space: nowrap; }}
             </style>
         </head>

@@ -484,7 +484,7 @@ pub async fn types_page(
 ) -> Result<Html<String>, Response> {
     let types = sqlx::query_as::<_, LicenseType>(
         r#"
-        SELECT id, name, duration_days
+        SELECT id, name, prefix, duration_days
         FROM license_types
         ORDER BY id DESC
         "#,
@@ -501,9 +501,10 @@ pub async fn types_page(
             format!("{} 天", item.duration_days)
         };
         rows.push_str(&format!(
-            r#"<tr><td>{}</td><td>{}</td><td>{}</td></tr>"#,
+            r#"<tr><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>"#,
             item.id,
             escape(&item.name),
+            escape(&item.prefix),
             duration
         ));
     }
@@ -516,7 +517,7 @@ pub async fn types_page(
             <section>
                 <h1>卡密类型</h1>
                 <table>
-                    <thead><tr><th>ID</th><th>名称</th><th>默认时长</th></tr></thead>
+                    <thead><tr><th>ID</th><th>名称</th><th>前缀</th><th>默认时长</th></tr></thead>
                     <tbody>{rows}</tbody>
                 </table>
             </section>
@@ -525,6 +526,8 @@ pub async fn types_page(
                 <form method="post" action="/admin/types">
                     <label>类型名称</label>
                     <input name="name" placeholder="例如：月卡" required>
+                    <label>卡密前缀</label>
+                    <input name="prefix" maxlength="32" value="LIC-" required>
                     <label>有效天数</label>
                     <input name="duration_days" type="number" min="0" value="30" required>
                     <p class="muted">填 0 表示永久卡。</p>
@@ -549,13 +552,23 @@ pub async fn create_license_type(
         return Err((StatusCode::BAD_REQUEST, "有效天数不能小于 0").into_response());
     }
 
+    let prefix = form.prefix.trim();
+    if prefix.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "卡密前缀不能为空").into_response());
+    }
+
+    if prefix.chars().count() > 32 {
+        return Err((StatusCode::BAD_REQUEST, "卡密前缀最多 32 个字符").into_response());
+    }
+
     sqlx::query(
         r#"
-        INSERT INTO license_types (name, duration_days)
-        VALUES ($1, $2)
+        INSERT INTO license_types (name, prefix, duration_days)
+        VALUES ($1, $2, $3)
         "#,
     )
     .bind(form.name.trim())
+    .bind(prefix)
     .bind(form.duration_days)
     .execute(&state.pool)
     .await
@@ -610,7 +623,7 @@ pub async fn licenses_page(
                 <td>{}</td>
                 <td><code>{}</code></td>
                 <td>{}</td>
-                <td>{}</td>
+                <td class="remark-cell">{}</td>
                 <td>{}</td>
                 <td>{}</td>
                 <td>{}</td>
@@ -719,9 +732,71 @@ pub async fn new_license_page(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<Html<String>, Response> {
-    let owners = visible_users(&state, &user).await?;
+    render_new_license_page(&state, &user, &[]).await
+}
+
+pub async fn create_license(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Form(form): Form<CreateLicenseForm>,
+) -> Result<Html<String>, Response> {
+    if form.count < 1 || form.count > 100 {
+        return Err((StatusCode::BAD_REQUEST, "单次生成数量必须在 1 到 100 之间").into_response());
+    }
+
+    let owner = get_user(&state, form.owner_id).await?;
+    if !can_manage_owner(&user, owner.id, owner.parent_id) {
+        return Err((StatusCode::FORBIDDEN, "不能给这个账号生成卡密").into_response());
+    }
+
+    let prefix: Option<String> =
+        sqlx::query_scalar("SELECT prefix FROM license_types WHERE id = $1")
+            .bind(form.type_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(internal_error)?;
+
+    let Some(prefix) = prefix else {
+        return Err((StatusCode::BAD_REQUEST, "卡密类型不存在").into_response());
+    };
+
+    let remark = form.remark.unwrap_or_default().trim().to_string();
+    if remark.chars().count() > 500 {
+        return Err((StatusCode::BAD_REQUEST, "备注最多 500 个字符").into_response());
+    }
+
+    let mut generated_keys = Vec::new();
+    for _ in 0..form.count {
+        let license_key = format!("{}{}", prefix, Uuid::new_v4().simple());
+
+        sqlx::query(
+            r#"
+            INSERT INTO licenses (license_key, owner_id, type_id, remark)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(&license_key)
+        .bind(owner.id)
+        .bind(form.type_id)
+        .bind(&remark)
+        .execute(&state.pool)
+        .await
+        .map_err(internal_error)?;
+
+        generated_keys.push(license_key);
+    }
+
+    render_new_license_page(&state, &user, &generated_keys).await
+}
+
+async fn render_new_license_page(
+    state: &AppState,
+    user: &SessionUser,
+    generated_keys: &[String],
+) -> Result<Html<String>, Response> {
+    let owners = visible_users(state, user).await?;
     let types = sqlx::query_as::<_, LicenseType>(
-        "SELECT id, name, duration_days FROM license_types ORDER BY id DESC",
+        "SELECT id, name, prefix, duration_days FROM license_types ORDER BY id DESC",
     )
     .fetch_all(&state.pool)
     .await
@@ -737,9 +812,24 @@ pub async fn new_license_page(
         ));
     }
 
+    let generated_result = if generated_keys.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"
+            <section>
+                <h2>本次生成结果</h2>
+                <textarea class="generated-licenses" readonly>{}</textarea>
+                <p class="muted">一行一张卡密，可直接全选复制。</p>
+            </section>
+            "#,
+            escape(&generated_keys.join("\n"))
+        )
+    };
+
     Ok(page(
         "生成卡密",
-        Some(&user),
+        Some(user),
         format!(
             r#"
             <section>
@@ -756,60 +846,11 @@ pub async fn new_license_page(
                     <p><button type="submit">生成</button></p>
                 </form>
             </section>
+            {generated_result}
             "#,
             owner_options_html(&owners)
         ),
     ))
-}
-
-pub async fn create_license(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Form(form): Form<CreateLicenseForm>,
-) -> Result<Redirect, Response> {
-    if form.count < 1 || form.count > 100 {
-        return Err((StatusCode::BAD_REQUEST, "单次生成数量必须在 1 到 100 之间").into_response());
-    }
-
-    let owner = get_user(&state, form.owner_id).await?;
-    if !can_manage_owner(&user, owner.id, owner.parent_id) {
-        return Err((StatusCode::FORBIDDEN, "不能给这个账号生成卡密").into_response());
-    }
-
-    let type_exists: Option<i64> = sqlx::query_scalar("SELECT id FROM license_types WHERE id = $1")
-        .bind(form.type_id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(internal_error)?;
-
-    if type_exists.is_none() {
-        return Err((StatusCode::BAD_REQUEST, "卡密类型不存在").into_response());
-    }
-
-    let remark = form.remark.unwrap_or_default().trim().to_string();
-    if remark.chars().count() > 500 {
-        return Err((StatusCode::BAD_REQUEST, "备注最多 500 个字符").into_response());
-    }
-
-    for _ in 0..form.count {
-        let license_key = format!("LIC-{}", Uuid::new_v4().simple());
-
-        sqlx::query(
-            r#"
-            INSERT INTO licenses (license_key, owner_id, type_id, remark)
-            VALUES ($1, $2, $3, $4)
-            "#,
-        )
-        .bind(license_key)
-        .bind(owner.id)
-        .bind(form.type_id)
-        .bind(&remark)
-        .execute(&state.pool)
-        .await
-        .map_err(internal_error)?;
-    }
-
-    Ok(Redirect::to("/admin/licenses"))
 }
 
 pub async fn ban_license(

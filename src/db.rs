@@ -22,10 +22,16 @@ pub async fn init_database(pool: &PgPool) -> Result<(), sqlx::Error> {
         CREATE TABLE IF NOT EXISTS license_types (
             id BIGSERIAL PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
+            prefix TEXT NOT NULL DEFAULT 'LIC-',
             duration_days INTEGER NOT NULL CHECK (duration_days >= 0),
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         "#,
+    )
+    .await?;
+
+    pool.execute(
+        "ALTER TABLE license_types ADD COLUMN IF NOT EXISTS prefix TEXT NOT NULL DEFAULT 'LIC-'",
     )
     .await?;
 
@@ -110,8 +116,8 @@ pub async fn init_database(pool: &PgPool) -> Result<(), sqlx::Error> {
     // 默认卡密类型，避免第一次进入后台时没有类型可选。
     sqlx::query(
         r#"
-        INSERT INTO license_types (name, duration_days)
-        VALUES ('月卡', 30)
+        INSERT INTO license_types (name, prefix, duration_days)
+        VALUES ('月卡', 'LIC-', 30)
         ON CONFLICT (name) DO NOTHING
         "#,
     )
